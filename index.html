@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>懶人記帳</title>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--ink:#1c1f24;--mute:#6b7280;--line:#d8dce3;--accent:#06a35a;--accent-ink:#fff;--warn:#b45309;--err:#c0392b}
+@media (prefers-color-scheme:dark){:root{--bg:#14161a;--card:#1e2126;--ink:#eceef2;--mute:#9aa1ad;--line:#343a44;--accent:#2ebd78;--accent-ink:#0b1a12;--warn:#f0b060;--err:#ff8a7a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 -apple-system,BlinkMacSystemFont,"Noto Sans TC","PingFang TC",sans-serif;padding:12px 16px calc(24px + env(safe-area-inset-bottom))}
+main{max-width:520px;margin:0 auto}
+.card{background:var(--card);border-radius:14px;padding:14px;margin-bottom:12px}
+label{display:block;font-size:13px;color:var(--mute);margin:10px 0 4px}
+label:first-child{margin-top:0}
+input,select,textarea{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-height:44px}
+.row{display:flex;gap:8px}.row>*{flex:1;min-width:0}
+.seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.seg button{flex:1;border:0;background:transparent;color:var(--ink);font:inherit;padding:10px;min-height:44px}
+.seg button.on{background:var(--accent);color:var(--accent-ink);font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.chips button{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:999px;padding:6px 12px;font:inherit;font-size:14px}
+.amt{display:flex;gap:8px}.amt button{flex:0 0 52px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:10px;font:inherit;font-size:18px}
+.primary{width:100%;border:0;border-radius:12px;background:var(--accent);color:var(--accent-ink);font:inherit;font-weight:700;padding:14px;min-height:50px;margin-top:6px}
+.primary:disabled{opacity:.5}
+#hint{font-size:14px;color:var(--mute);min-height:20px;margin-top:6px}
+#hint.warn{color:var(--warn)}
+#msg{display:none;margin-bottom:12px;padding:12px 14px;border-radius:12px;background:var(--card);border-left:4px solid var(--accent)}
+#msg.err{border-left-color:var(--err);color:var(--err)}
+#undo{margin-left:10px;border:0;background:none;color:var(--accent);font:inherit;text-decoration:underline;padding:4px}
+.hide{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <div id="msg" role="status"></div>
+  <form id="f" class="card hide" autocomplete="off">
+    <div class="seg" id="typeSeg"><button type="button" data-v="支出" class="on">支出</button><button type="button" data-v="收入">收入</button></div>
+
+    <label for="date">日期</label>
+    <input id="date" type="date" required>
+
+    <label for="item">品項</label>
+    <input id="item" type="text" required placeholder="例如 午餐">
+    <div class="chips" id="chips"></div>
+
+    <label for="amount">金額</label>
+    <div class="amt"><input id="amount" type="number" inputmode="decimal" step="any" required placeholder="0"><button type="button" id="sign" aria-label="正負切換">±</button></div>
+
+    <div class="row">
+      <div><label for="media">媒介</label><select id="media"></select></div>
+      <div><label for="pay">支付方式</label><select id="pay"></select></div>
+    </div>
+
+    <div id="cardRow">
+      <label for="card">卡別</label>
+      <select id="card"></select>
+      <div id="planRow"><label for="plan">方案</label><select id="plan"></select></div>
+    </div>
+
+    <label for="project">專案</label>
+    <select id="project"></select>
+
+    <label for="note">備註</label>
+    <input id="note" type="text">
+
+    <div id="hint"></div>
+    <button class="primary" id="go" type="submit">記下來</button>
+  </form>
+  <p id="loading" style="color:var(--mute);text-align:center">載入中…</p>
+</main>
+<script>
+// ★ 部署前改這兩行
+const LIFF_ID = '2012377027-GidYRdof';
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbypgZlsyyiSshoO02zr_KRmRxHnWOMLqLfM0MbaR_WolJo0vbOTqYAADYWl2SiCMqG_/exec';
+
+const $ = id => document.getElementById(id);
+let S = null, type = '支出';
+
+async function api(action, payload) {
+  const r = await fetch(GAS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(Object.assign({ action, token: liff.getAccessToken() }, payload || {}))
+  });
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error || '失敗');
+  return j;
+}
+
+function msg(text, err, undo) {
+  const m = $('msg');
+  m.className = err ? 'err' : '';
+  m.style.display = 'block';
+  m.textContent = text;
+  if (undo) {
+    const b = document.createElement('button');
+    b.id = 'undo'; b.type = 'button'; b.textContent = '復原';
+    b.onclick = async () => {
+      b.disabled = true;
+      try { await api('undo'); msg('已復原上一筆'); } catch (e) { msg(e.message, true); }
+    };
+    m.appendChild(b);
+  }
+}
+
+function fill(sel, items, blank) {
+  sel.textContent = '';
+  if (blank !== undefined) sel.add(new Option(blank, ''));
+  items.forEach(v => sel.add(new Option(v, v)));
+}
+
+function needCard() {
+  const p = S.pay.find(x => x.name === $('pay').value);
+  return !p || p.needCard;
+}
+
+function refreshCard() {
+  const show = type === '支出' && needCard();
+  $('cardRow').classList.toggle('hide', !show);
+  if (show) refreshPlans();
+  preview();
+}
+
+function refreshPlans() {
+  const c = $('card').value, plans = S.plans[c] || [];
+  fill($('plan'), plans);
+  $('planRow').classList.toggle('hide', !plans.length);
+  const last = S.lastPlan[c];
+  $('plan').value = plans.includes(last) ? last : (plans.find(p => p.startsWith('基本')) || plans[0] || '');
+}
+
+function preview() {
+  const h = $('hint');
+  h.className = ''; h.textContent = '';
+  if (type !== '支出' || $('cardRow').classList.contains('hide')) return;
+  const c = $('card').value, p = $('plan').value;
+  if (!c) return;
+  const rate = (S.rates[c] || {})[p];
+  if (rate === undefined || rate === null) { h.className = 'warn'; h.textContent = '這個方案還沒有趴數，請到「回饋規則」補上'; return; }
+  const a = parseFloat($('amount').value);
+  h.textContent = isNaN(a) ? '回饋 ' + rate + '%' : '回饋 ' + rate + '% ≈ ' + Math.round(a * rate) / 100;
+}
+
+function setType(t) {
+  type = t;
+  document.querySelectorAll('#typeSeg button').forEach(b => b.classList.toggle('on', b.dataset.v === t));
+  refreshCard();
+}
+
+function applyQuick(q) {
+  setType(q.type === '收入' ? '收入' : '支出');
+  $('item').value = q.item || '';
+  if (q.amount !== '' && q.amount != null && !isNaN(Number(q.amount))) $('amount').value = q.amount;
+  if (q.media) $('media').value = q.media;
+  if (q.pay) $('pay').value = q.pay;
+  if (q.project) $('project').value = q.project;
+  refreshCard();
+  if (q.card && S.cards.includes(q.card)) {
+    $('card').value = q.card; refreshPlans();
+    if (q.plan) $('plan').value = q.plan;
+  }
+  preview();
+}
+
+function build() {
+  $('date').value = S.today;
+  fill($('media'), S.media, '（不填）');
+  fill($('pay'), S.pay.map(p => p.name), '（不填）');
+  fill($('card'), S.cards);
+  fill($('project'), S.projects, '（無）');
+  $('project').value = S.lastProject || '';
+  const chips = $('chips');
+  S.quick.forEach(q => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = q.item; b.onclick = () => applyQuick(q);
+    chips.appendChild(b);
+  });
+  document.querySelectorAll('#typeSeg button').forEach(b => b.onclick = () => setType(b.dataset.v));
+  $('pay').onchange = refreshCard;
+  $('card').onchange = () => { refreshPlans(); preview(); };
+  $('plan').onchange = preview;
+  $('amount').oninput = preview;
+  $('sign').onclick = () => { const v = $('amount').value; if (v !== '') $('amount').value = String(-Number(v)); preview(); };
+  $('f').onsubmit = submit;
+  refreshCard();
+  $('loading').classList.add('hide');
+  $('f').classList.remove('hide');
+}
+
+async function submit(e) {
+  e.preventDefault();
+  const go = $('go');
+  go.disabled = true;
+  try {
+    const showCard = !$('cardRow').classList.contains('hide');
+    const rec = {
+      date: $('date').value, type, item: $('item').value.trim(), amount: $('amount').value,
+      media: $('media').value, pay: $('pay').value,
+      card: showCard ? $('card').value : '', plan: showCard ? $('plan').value : '',
+      project: $('project').value, note: $('note').value.trim()
+    };
+    const r = await api('add', { rec });
+    let t = '已記錄：' + rec.item + ' ' + rec.amount;
+    if (r.rebate !== null && r.rebate !== undefined) t += '（回饋 ' + r.rate + '% = ' + r.rebate + '）';
+    if (r.fallback) t += '。所選方案已過期，改用基本趴數';
+    msg(t, false, true);
+    S.lastProject = rec.project;
+    if (rec.card && rec.plan) S.lastPlan[rec.card] = rec.plan;
+    $('item').value = ''; $('amount').value = ''; $('note').value = '';
+    preview();
+    $('item').focus();
+  } catch (err) {
+    msg(err.message, true);
+  } finally {
+    go.disabled = false;
+  }
+}
+
+(async function boot() {
+  try {
+    await liff.init({ liffId: LIFF_ID });
+    if (!liff.isLoggedIn()) { liff.login(); return; }
+    S = await api('init');
+    build();
+  } catch (e) {
+    $('loading').textContent = '';
+    msg(e.message, true);
+  }
+})();
+</script>
+</body>
+</html>
